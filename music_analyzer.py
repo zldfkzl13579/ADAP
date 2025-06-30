@@ -5,31 +5,32 @@ import numpy as np
 from pydub import AudioSegment
 import librosa
 import librosa.display
-
+import math
 
 MUSIC_FOLDER = 'music_files'
 OUTPUT_CSV_FILE = 'MusicAnalysisResults.csv'
 
 SUPPORTED_EXTENSIONS = ('.mp3', '.wav', '.flac', '.ogg', '.aac')
-"""
+
 VALENCE_CENTROIDS = {
-    "밝은": {"Key_Val": 1, "SpectralCentroid_Mean": 2500, "Spectral_Rolloff_Mean": 5000}, # Major Key, 높은 스펙트럼 중심/롤오프
-    "어두운": {"Key_Val": 0, "SpectralCentroid_Mean": 1500, "Spectral_Rolloff_Mean": 3000}, # Minor Key, 낮은 스펙트럼 중심/롤오프
+    "밝은": {"SpectralCentroid_Mean": 4525.0553, "Spectral_Rolloff_Mean": 9716.6697}, # Major Key, 높은 스펙트럼 중심/롤오프
+    "보통": {"SpectralCentroid_Mean": 3179.7568, "Spectral_Rolloff_Mean": 6639.5068}, # Major Key, 중간 스펙트럼 중심/롤오프
+    "어두운": {"SpectralCentroid_Mean": 1834.4584, "Spectral_Rolloff_Mean": 3562.3439}, # Minor Key, 낮은 스펙트럼 중심/롤오프
 }
-"""
 AROUSAL_CENTROIDS = {
-    "활기찬": {"BPM": 140, "RMS_Mean": 0.15}, # 높은 BPM, 높은 RMS
-    "평온한": {"BPM": 80, "RMS_Mean": 0.05}, # 낮은 BPM, 낮은 RMS
+    "역동적인": {"BPM": 134.1619, "RMS_Mean": 0.3428}, # 높은 BPM, 높은 RMS
+    "온화한": {"BPM": 123.0013, "RMS_Mean": 0.2}, # 중간 BPM, 중간 RMS
+    "차분한": {"BPM": 111.8407, "RMS_Mean": 0.0572}, # 낮은 BPM, 낮은 RMS
 }
 INTENSITY_CENTROIDS = {
-    "강렬한": {"RMS_Mean": 0.20, "SpectralFlatness_Mean": 0.05}, # 높은 RMS, 높은 평탄도
-    "온건한": {"RMS_Mean": 0.10, "SpectralFlatness_Mean": 0.02}, # 중간 RMS, 중간 평탄도
-    "잔잔한": {"RMS_Mean": 0.03, "SpectralFlatness_Mean": 0.005}, # 낮은 RMS, 낮은 평탄도
+    "강렬한": {"RMS_Mean": 0.2590, "SpectralFlatness_Mean": 0.0298}, # 높은 RMS, 높은 평탄도
+    "온건한": {"RMS_Mean": 0.2, "SpectralFlatness_Mean": 0.0171}, # 중간 RMS, 중간 평탄도
+    "잔잔한": {"RMS_Mean": 0.1409, "SpectralFlatness_Mean": 0.0044}, # 낮은 RMS, 낮은 평탄도
 }
 COMPLEXITY_CENTROIDS = {
-    "복잡한": {"RhythmComplexity_Score": 0.3, "SpectralFlatness_Mean": 0.04}, # 높은 리듬 복잡성, 높은 평탄도
-    "규칙적인": {"RhythmComplexity_Score": 0.1, "SpectralFlatness_Mean": 0.015}, # 중간 리듬 복잡성, 중간 평탄도
-    "단순한": {"RhythmComplexity_Score": 0.05, "SpectralFlatness_Mean": 0.008}, # 낮은 리듬 복잡성, 낮은 평탄도
+    "복잡한": {"RhythmComplexity_Score": 1.05, "SpectralFlatness_Mean": 0.022}, # 높은 리듬 복잡성, 높은 평탄도
+    "규칙적인": {"RhythmComplexity_Score": 0.8, "SpectralFlatness_Mean": 0.015}, # 중간 리듬 복잡성, 중간 평탄도
+    "단순한": {"RhythmComplexity_Score": 0.55, "SpectralFlatness_Mean": 0.08}, # 낮은 리듬 복잡성, 낮은 평탄도
 }
 KEY_SCORES = {
     'C Major': 7.66666667, 'C# Major': 6.66666667, 'D Major': 8.66666667,
@@ -52,15 +53,19 @@ def calculate_distance(features, centroids):
             
     return np.sqrt(distance)
 
-
-def map_mood(features, centroids_map, feature_keys):
+def map_mood(features, centroids_map, feature_keys, what):
     min_distance = float('inf')
     mapped_mood = "알 수 없음"
+    TANH_STEEPNESS = 0.3 # 탄젠트 함수 input 크기조절 
+    MAX_ADJUSTMENT_PERCENTAGE = 0.2 # 길이에 몇% 적용시킬지. 0.2 = +-20%
+    current_key_score = None
+    if what == 'Valence':
+        current_key_score = KEY_SCORES.get(features.get("Key", "Unknown"), UNKNOWN_KEY_SCORE)
 
     for mood, centroid_values in centroids_map.items():
-        current_features_for_mood = {k: features[k] for k in feature_keys if k in features and features[k] is not None}
-        centroid_values_for_mood = {k: centroid_values[k] for k in feature_keys if k in centroid_values}
-        
+        current_features_for_mood = {k: features.get(k) for k in feature_keys if k in features and features.get(k) is not None} # 특징명:값, 특징명:값
+        centroid_values_for_mood = {k: centroid_values.get(k) for k in feature_keys if k in centroid_values}
+
         if len(current_features_for_mood) != len(feature_keys):
             print(f"경고: {mood} 매핑을 위한 일부 특징 값이 누락되었습니다.")
             continue
@@ -69,64 +74,42 @@ def map_mood(features, centroids_map, feature_keys):
             continue
 
         current_distance = calculate_distance(current_features_for_mood, centroid_values_for_mood)
+        adjusted_distance = current_distance
 
-        if current_distance < min_distance:
-            min_distance = current_distance
+        if what == "Valence":
+            if current_key_score is not None: 
+                scaled_key_score = current_key_score * TANH_STEEPNESS
+                tanh_output = math.tanh(scaled_key_score)
+                percentage_adjustment = abs(tanh_output) * MAX_ADJUSTMENT_PERCENTAGE
+
+                if tanh_output > 0:
+                    adjusted_distance = current_distance * (1 + percentage_adjustment)
+                elif tanh_output < 0:
+                    adjusted_distance = current_distance * (1 - percentage_adjustment)
+                
+                adjusted_distance = max(0, adjusted_distance)
+
+        if adjusted_distance < min_distance:
+            min_distance = adjusted_distance
             mapped_mood = mood
             
     return mapped_mood
 
 def map_valence_mood(audio_features):
-    estimated_key = audio_features.get("Key", "Unknown")
-    spectral_centroid_mean = audio_features.get("SpectralCentroid_Mean")
-    spectral_rolloff_mean = audio_features.get("Spectral_Rolloff_Mean")
-
-    if any(val is None for val in [spectral_centroid_mean, spectral_rolloff_mean]):
-        return "알 수 없음 (특징 부족)"
-
-    key_score = KEY_SCORES.get(estimated_key, UNKNOWN_KEY_SCORE)
-
-    CENTROID_MIN, CENTROID_MAX = 500, 4000
-    ROLLOFF_MIN, ROLLOFF_MAX = 1000, 8000
-    KEY_SCORE_MIN, KEY_SCORE_MAX = -10, 10 # KEY_SCORES 딕셔너리의 최소/최대 값
-
-    normalized_spectral_centroid = 0
-    if (CENTROID_MAX - CENTROID_MIN) != 0:
-        normalized_spectral_centroid = (spectral_centroid_mean - CENTROID_MIN) / (CENTROID_MAX - CENTROID_MIN) * 100
-        normalized_spectral_centroid = np.clip(normalized_spectral_centroid, 0, 100) # 0-100 범위로 클리핑
-
-    normalized_spectral_rolloff = 0
-    if (ROLLOFF_MAX - ROLLOFF_MIN) != 0:
-        normalized_spectral_rolloff = (spectral_rolloff_mean - ROLLOFF_MIN) / (ROLLOFF_MAX - ROLLOFF_MIN) * 100
-        normalized_spectral_rolloff = np.clip(normalized_spectral_rolloff, 0, 100) # 0-100 범위로 클리핑
-
-    normalized_key_score = 0
-    if (KEY_SCORE_MAX - KEY_SCORE_MIN) != 0:
-        normalized_key_score = (key_score - KEY_SCORE_MIN) / (KEY_SCORE_MAX - KEY_SCORE_MIN) * 100
-        normalized_key_score = np.clip(normalized_key_score, 0, 100) # 0-100 범위로 클리핑
-    
-    valence_score = (normalized_spectral_centroid * 0.4) + \
-                    (normalized_spectral_rolloff * 0.3) + \
-                    (normalized_key_score * 0.3)
-    
-    BRIGHT_THRESHOLD = 50
-
-    if valence_score >= BRIGHT_THRESHOLD:
-        return "밝음"
-    else:
-        return "어두움"
+    feature_keys = ["SpectralCentroid_Mean", "Spectral_Rolloff_Mean"]
+    return map_mood(audio_features, VALENCE_CENTROIDS, feature_keys, "Valence")
 
 def map_arousal_mood(audio_features):
     feature_keys = ["BPM", "RMS_Mean"]
-    return map_mood(audio_features, AROUSAL_CENTROIDS, feature_keys)
+    return map_mood(audio_features, AROUSAL_CENTROIDS, feature_keys, "Arousal")
 
 def map_intensity_mood(audio_features):
     feature_keys = ["RMS_Mean", "SpectralFlatness_Mean"]
-    return map_mood(audio_features, INTENSITY_CENTROIDS, feature_keys)
+    return map_mood(audio_features, INTENSITY_CENTROIDS, feature_keys, "Intensity")
 
 def map_complexity_mood(audio_features):
     feature_keys = ["RhythmComplexity_Score", "SpectralFlatness_Mean"]
-    return map_mood(audio_features, COMPLEXITY_CENTROIDS, feature_keys)
+    return map_mood(audio_features, COMPLEXITY_CENTROIDS, feature_keys, "Complexity")
 
 
 def estimate_key(y, sr, file_name): #키 특징추출 함수
